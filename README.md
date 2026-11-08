@@ -17,6 +17,7 @@ PHP and Laravel pieces you will actually meet in this codebase.
 
 ## Table of Contents
 
+0. [Your first CRUD API (start here)](#0-your-first-crud-api-start-here) — [https://laravel.com/docs/routing](https://laravel.com/docs/routing)
 1. [The big picture: one request, end to end](#1-the-big-picture-one-request-end-to-end) — [https://laravel.com/framework/docs/12.x/lifecycle](https://laravel.com/framework/docs/12.x/lifecycle)
 2. [Project layout: where things live](#2-project-layout-where-things-live) — [https://laravel.com/framework/docs/12.x/structure](https://laravel.com/framework/docs/12.x/structure)
 3. [PHP syntax you must recognise](#3-php-syntax-you-must-recognise) — [https://www.php.net/manual/en/language.types.declarations.php](https://www.php.net/manual/en/language.types.declarations.php)
@@ -44,6 +45,469 @@ PHP and Laravel pieces you will actually meet in this codebase.
 25. [Common gotchas](#25-common-gotchas) — [https://laravel.com/framework/docs/12.x/errors](https://laravel.com/framework/docs/12.x/errors)
 26. [Study plan and exercises](#26-study-plan-and-exercises) — [https://laravel.com/framework/docs/12.x/testing](https://laravel.com/framework/docs/12.x/testing)
 27. [Documentation index](#27-documentation-index) — [https://laravel.com/framework/docs/12.x/documentation](https://laravel.com/framework/docs/12.x/documentation)
+
+---
+
+## 0. Your first CRUD API (start here)
+
+This is the smallest useful Laravel API you can build. It exercises the whole path:
+
+```
+HTTP request → route → FormRequest → controller → service → model → database → JSON response
+```
+
+You will build two endpoints:
+
+| Method | URL                     | What it does                                                  |
+| ------ | ----------------------- | ------------------------------------------------------------- |
+| `GET`  | `/api/messages/welcome` | Returns a friendly message with an emoji added by the service |
+| `POST` | `/api/messages`         | Validates `message`, saves it, and returns the saved row      |
+
+"CRUD" means **C**reate, **R**ead, **U**pdate, **D**elete. This first exercise covers **Create** and a small
+**Read**. The exercises at the end show how to finish the rest.
+
+An API has no Blade view. Its "view" is the **JSON response** returned by the controller. So this is still MVC,
+but the V is JSON instead of HTML.
+
+### 0.1 Make sure API routes are enabled
+
+In a fresh Laravel 11+ app, `routes/api.php` may not exist. Either run:
+
+```bash
+php artisan install:api
+```
+
+or create `routes/api.php` yourself and make sure `bootstrap/app.php` loads it:
+
+```php
+->withRouting(
+    web: __DIR__.'/../routes/web.php',
+    api: __DIR__.'/../routes/api.php',
+    commands: __DIR__.'/../routes/console.php',
+    health: '/up',
+)
+```
+
+Routes in `routes/api.php` automatically get the `/api` prefix. That is why the controller routes below are
+written as `messages`, but the real URLs are `/api/messages` and `/api/messages/welcome`.
+
+### 0.2 Generate the files
+
+```bash
+php artisan make:model Message -m
+php artisan make:request StoreMessageRequest
+php artisan make:class Services/MessageService
+php artisan make:controller Api/MessageController
+```
+
+What each file is:
+
+| File                  | MVC role   | Job                                            |
+| --------------------- | ---------- | ---------------------------------------------- |
+| `Message`             | Model      | reads and writes the `messages` table          |
+| `MessageService`      | Service    | business logic: welcome text and persistence   |
+| `MessageController`   | Controller | receives HTTP, calls the service, returns JSON |
+| `StoreMessageRequest` | Request    | validates input before the controller runs     |
+| migration             | Schema     | creates the `messages` table                   |
+
+### 0.3 Migration: create the table
+
+Open the new `database/migrations/*_create_messages_table.php` and replace `up()` with:
+
+```php
+public function up(): void
+{
+    Schema::create('messages', function (Blueprint $table): void {
+        $table->id();
+        $table->string('message');
+        $table->timestamps();
+    });
+}
+```
+
+`id` and `message` are your two data columns. `timestamps()` adds `created_at` and `updated_at`, which Eloquent
+maintains automatically.
+
+Run the migration:
+
+```bash
+php artisan migrate
+```
+
+### 0.4 Model: talk to the table
+
+`app/Models/Message.php`:
+
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Message extends Model
+{
+    protected $fillable = ['message'];
+}
+```
+
+- The class name `Message` maps to the table `messages` automatically.
+- `$fillable` is the mass-assignment allow-list. `create(['message' => ...])` works because `message` is listed.
+  Sending an unlisted column would fail instead of silently writing it.
+
+### 0.5 Service: keep business logic out of the controller
+
+`app/Services/MessageService.php`:
+
+```php
+<?php
+
+namespace App\Services;
+
+use App\Models\Message;
+
+class MessageService
+{
+    public function welcomeMessage(): string
+    {
+        return $this->withEmoji('you learned how to create an api yeah!!!!!');
+    }
+
+    public function create(string $message): Message
+    {
+        return Message::query()->create([
+            'message' => $message,
+        ]);
+    }
+
+    private function withEmoji(string $message): string
+    {
+        return $message.' 🎉';
+    }
+}
+```
+
+Why a service instead of putting this in the controller?
+
+| Controller                          | Service                                            |
+| ----------------------------------- | -------------------------------------------------- |
+| HTTP only: request in, response out | Business rules: welcome decoration and persistence |
+| Does not call Eloquent directly     | Can be called from a command, job, or test         |
+
+If the greeting or the create rules change tomorrow, only `MessageService` changes. The controller stays the same.
+The POST endpoint stores exactly what the user sent; only the welcome endpoint decorates its text.
+
+### 0.6 Form Request: validate before the controller runs
+
+`app/Http/Requests/StoreMessageRequest.php`:
+
+```php
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StoreMessageRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'message' => ['required', 'string', 'max:255'],
+        ];
+    }
+}
+```
+
+- `authorize()` returns `true` because this tiny endpoint is public. Returning `false` would produce `403`.
+- `rules()` says: the request must contain `message`, it must be a string, and it can be at most 255 characters.
+- On failure Laravel throws a validation exception and returns `422` JSON. The controller never runs.
+- `$request->validated()` in the controller returns only the keys that passed validation.
+
+### 0.7 Controller: the HTTP entry point
+
+`app/Http/Controllers/Api/MessageController.php`:
+
+```php
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\StoreMessageRequest;
+use App\Services\MessageService;
+use Illuminate\Http\JsonResponse;
+
+class MessageController extends Controller
+{
+    public function __construct(private MessageService $service) {}
+
+    public function welcome(): JsonResponse
+    {
+        return response()->json([
+            'message' => $this->service->welcomeMessage(),
+        ]);
+    }
+
+    public function store(StoreMessageRequest $request): JsonResponse
+    {
+        $message = $this->service->createMessage($request->validated('message'));
+
+        return response()->json([
+            'message' => 'Message saved',
+            'data' => [
+                'id' => $message->id,
+                'message' => $message->message,
+            ],
+        ], 201);
+    }
+}
+```
+
+What Laravel does behind the scenes:
+
+1. The container reads the constructor type hint and injects `MessageService` automatically.
+2. For `store()`, Laravel sees `StoreMessageRequest`, builds it, runs `authorize()`, then `rules()`.
+3. If validation passes, the action runs. If it fails, Laravel returns `422` and the action is skipped.
+4. `response()->json(..., 201)` sends JSON with the `201 Created` status.
+
+Return only the fields the client needs (`id`, `message`) instead of the whole model. That keeps the response
+stable if you add internal columns later.
+
+### 0.8 Routes: connect URLs to controller methods
+
+`routes/api.php`:
+
+```php
+<?php
+
+use App\Http\Controllers\Api\MessageController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('messages/welcome', [MessageController::class, 'welcome']);
+Route::post('messages', [MessageController::class, 'store']);
+```
+
+- `[MessageController::class, 'welcome']` means "call the `welcome` method on this controller".
+- The `/api` prefix comes from `bootstrap/app.php`, so you do not repeat it here.
+- The real URLs are `GET /api/messages/welcome` and `POST /api/messages`.
+
+### 0.9 Try it
+
+```bash
+php artisan migrate
+php artisan route:list --path=api/messages
+php artisan serve
+```
+
+In another terminal:
+
+```bash
+BASE=http://127.0.0.1:8000
+
+# Read: welcome message + emoji from the service
+curl "$BASE/api/messages/welcome"
+
+# Create: validate, save to the database, return 201
+curl -i -X POST "$BASE/api/messages" \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"I created my first row"}'
+
+# Validation failure: message is missing, so Laravel returns 422
+curl -i -X POST "$BASE/api/messages" \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+Expected responses:
+
+```json
+{ "message": "you learned how to create an api yeah!!!!! 🎉" }
+```
+
+```json
+{
+    "message": "Message saved",
+    "data": {
+        "id": 1,
+        "message": "I created my first row"
+    }
+}
+```
+
+```json
+{
+    "message": "The message field is required.",
+    "errors": {
+        "message": ["The message field is required."]
+    }
+}
+```
+
+> If you have already applied the admin-key middleware from [section 5](#5-middleware) to API routes, add
+> `-H 'X-Admin-Key: your-key'` to every request. Otherwise those routes return `401` before reaching the controller.
+
+Check that the row really exists:
+
+```bash
+php artisan tinker --execute 'App\Models\Message::query()->latest("id")->first();'
+```
+
+### 0.10 Trace the two requests
+
+```
+GET /api/messages/welcome
+  Route → MessageController@welcome
+        → MessageService::welcomeMessage()
+        → response()->json([...]) → 200
+```
+
+```
+POST /api/messages
+  Route → StoreMessageRequest (authorize + validate)
+        → MessageController@store
+        → MessageService::create()
+        → Message model → INSERT INTO messages
+        → response()->json([...], 201)
+```
+
+This is the same flow used by the big scraping project later in this guide. The names get bigger, but the path
+is identical.
+
+### 0.11 Finish CRUD
+
+So far you have **C**reate and a small **R**ead. Add the rest without breaking the rule from section 0.5:
+the controller stays thin and the database work lives in `MessageService`. The path is still
+`route → FormRequest → controller → service → model → database → JSON`.
+
+Try each step yourself first, then compare with the code below.
+
+#### 1. Add the read, update, and delete methods to the service
+
+Add these methods to `app/Services/MessageService.php` (and import `Illuminate\Database\Eloquent\Collection`):
+
+```php
+/** @return Collection<int, Message> */
+public function all(): Collection
+{
+    return Message::query()->latest('id')->get();
+}
+
+public function update(Message $message, string $messageText): Message
+{
+    $message->update(['message' => $messageText]);
+
+    return $message;
+}
+
+public function delete(Message $message): void
+{
+    $message->delete();
+}
+```
+
+#### 2. Add the matching controller actions
+
+Add these methods to `MessageController` (and import `App\Models\Message` and `Illuminate\Http\Response`):
+
+```php
+public function index(): JsonResponse
+{
+    return response()->json([
+        'data' => $this->service->all(),
+    ]);
+}
+
+public function show(Message $message): JsonResponse
+{
+    return response()->json([
+        'data' => $message,
+    ]);
+}
+
+public function update(StoreMessageRequest $request, Message $message): JsonResponse
+{
+    $message = $this->service->update($message, $request->validated('message'));
+
+    return response()->json([
+        'message' => 'Message updated',
+        'data' => $message,
+    ]);
+}
+
+public function destroy(Message $message): Response
+{
+    $this->service->delete($message);
+
+    return response()->noContent();   // 204
+}
+```
+
+`show()`, `update()`, and `destroy()` rely on route-model binding: Laravel sees `Message $message` and the
+`{message}` route parameter, loads that row, and returns `404` if it does not exist. The names must match.
+We reuse `StoreMessageRequest` for the update because the validation rule is identical; in a bigger app you
+would create an `UpdateMessageRequest`.
+
+#### 3. Register the routes (order matters)
+
+`routes/api.php`:
+
+```php
+<?php
+
+use App\Http\Controllers\Api\MessageController;
+use Illuminate\Support\Facades\Route;
+
+// Keep "welcome" BEFORE "{message}" or the wildcard will swallow it.
+Route::get('messages/welcome', [MessageController::class, 'welcome']);
+
+Route::get('messages', [MessageController::class, 'index']);
+Route::post('messages', [MessageController::class, 'store']);
+Route::get('messages/{message}', [MessageController::class, 'show']);
+Route::match(['put', 'patch'], 'messages/{message}', [MessageController::class, 'update']);
+Route::delete('messages/{message}', [MessageController::class, 'destroy']);
+```
+
+Laravel matches routes top to bottom. If `messages/{message}` were declared first, a request to
+`GET /api/messages/welcome` would be read as "show the message whose id is `welcome`" and return `404`.
+That is the same trap as `/status` before `/{scrapingJob}` in [section 4](#4-routing).
+
+`Route::match(['put', 'patch'], ...)` registers **one** route that answers both verbs, so
+`php artisan route:list --path=api/messages` shows six entries: welcome, index, store, show, update, destroy.
+
+#### 4. Try the new endpoints
+
+```bash
+BASE=http://127.0.0.1:8000
+
+# Read all
+curl "$BASE/api/messages"
+
+# Read one
+curl "$BASE/api/messages/1"
+
+# Update (PUT and PATCH both hit the same route)
+curl -i -X PATCH "$BASE/api/messages/1" \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"I updated my first row"}'
+
+# Delete -> 204 with an empty body
+curl -i -X DELETE "$BASE/api/messages/1"
+
+# The row is gone -> 404
+curl -i -H 'Accept: application/json' "$BASE/api/messages/1"
+```
+
+Then move on to [section 1](#1-the-big-picture-one-request-end-to-end) and read the same concepts applied to a
+real project.
 
 ---
 
