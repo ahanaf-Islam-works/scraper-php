@@ -10,8 +10,7 @@ PHP and Laravel pieces you will actually meet in this codebase.
 > Check the version in `composer.json` (`"laravel/framework"`) if something differs.
 
 > **Implementation exercises:** start with
-> [Guided Implementation Exercises: Enums/Types → Data Model](#guided-implementation-exercises-enumstypes--data-model)
-> at the end of this file.
+> [Part 1: Questions](#part-1-questions) (Enums/Types → Data Model) at the end of this file.
 
 ---
 
@@ -2335,22 +2334,24 @@ PostgreSQL, and a small Artisan command plays the role of the scraper by sending
 ## Table of Contents
 
 0. [What you will build](#0-what-you-will-build) — [https://laravel.com/framework/docs/12.x/introduction](https://laravel.com/framework/docs/12.x/introduction)
-1. [Create the project](#1-create-the-project) — [https://laravel.com/framework/docs/12.x/installation](https://laravel.com/framework/docs/12.x/installation)
-2. [Config, middleware, and JSON errors](#2-config-middleware-and-json-errors) — [https://laravel.com/framework/docs/12.x/configuration](https://laravel.com/framework/docs/12.x/configuration)
-3. [Enums](#3-enums) — [https://www.php.net/manual/en/language.enumerations.php](https://www.php.net/manual/en/language.enumerations.php)
-4. [Database: migrations](#4-database-migrations) — [https://laravel.com/framework/docs/12.x/migrations](https://laravel.com/framework/docs/12.x/migrations)
-5. [Models and factories](#5-models-and-factories) — [https://laravel.com/framework/docs/12.x/eloquent](https://laravel.com/framework/docs/12.x/eloquent)
-6. [Ingestion layer: interface, trait, registry](#6-ingestion-layer-interface-trait-registry) — [https://laravel.com/framework/docs/12.x/container](https://laravel.com/framework/docs/12.x/container)
-7. [The main service: `ScrapingJobService`](#7-the-main-service-scrapingjobservice) — [https://laravel.com/framework/docs/12.x/providers](https://laravel.com/framework/docs/12.x/providers)
-8. [Queue job, event, listener](#8-queue-job-event-listener) — [https://laravel.com/framework/docs/12.x/queues](https://laravel.com/framework/docs/12.x/queues)
-9. [HTTP layer: requests, resources, controllers, routes](#9-http-layer-requests-resources-controllers-routes) — [https://laravel.com/framework/docs/12.x/controllers](https://laravel.com/framework/docs/12.x/controllers)
-10. [Commands and the scheduler](#10-commands-and-the-scheduler) — [https://laravel.com/framework/docs/12.x/artisan](https://laravel.com/framework/docs/12.x/artisan)
-11. [Run it and make API calls](#11-run-it-and-make-api-calls) — [https://laravel.com/framework/docs/12.x/routing](https://laravel.com/framework/docs/12.x/routing)
-12. [Write tests](#12-write-tests) — [https://laravel.com/framework/docs/12.x/testing](https://laravel.com/framework/docs/12.x/testing)
-13. [Poke at the internals](#13-poke-at-the-internals) — [https://laravel.com/framework/docs/12.x/artisan#tinker](https://laravel.com/framework/docs/12.x/artisan#tinker)
-14. [Exercises](#14-exercises) — [https://laravel.com/framework/docs/12.x/testing](https://laravel.com/framework/docs/12.x/testing)
-15. [Troubleshooting](#15-troubleshooting) — [https://laravel.com/framework/docs/12.x/errors](https://laravel.com/framework/docs/12.x/errors)
-16. [Concept map](#16-concept-map) — [https://laravel.com/framework/docs/12.x/lifecycle](https://laravel.com/framework/docs/12.x/lifecycle)
+1. [Create the project](#q1-create-the-project-environment-and-config-file) — [https://laravel.com/framework/docs/12.x/installation](https://laravel.com/framework/docs/12.x/installation)
+2. [Config, middleware, and JSON errors](#q2-admin-key-middleware-request-id-middleware-and-json-errors) — [https://laravel.com/framework/docs/12.x/configuration](https://laravel.com/framework/docs/12.x/configuration)
+3. [Enums](#b-enums-and-exceptions) — [https://www.php.net/manual/en/language.enumerations.php](https://www.php.net/manual/en/language.enumerations.php)
+4. [Database: migrations](#c-data-model) — [https://laravel.com/framework/docs/12.x/migrations](https://laravel.com/framework/docs/12.x/migrations)
+5. [Models and factories](#c-data-model) — [https://laravel.com/framework/docs/12.x/eloquent](https://laravel.com/framework/docs/12.x/eloquent)
+6. [Ingestion layer: interface, trait, registry](#d-ingestion-layer) — [https://laravel.com/framework/docs/12.x/container](https://laravel.com/framework/docs/12.x/container)
+7. [The main service: `ScrapingJobService`](#f-core-service) — [https://laravel.com/framework/docs/12.x/providers](https://laravel.com/framework/docs/12.x/providers)
+8. [Queue job, event, listener](#e-events) — [https://laravel.com/framework/docs/12.x/queues](https://laravel.com/framework/docs/12.x/queues)
+9. [HTTP layer: requests, resources, controllers, routes](#g-http-layer) — [https://laravel.com/framework/docs/12.x/controllers](https://laravel.com/framework/docs/12.x/controllers)
+10. [Commands and the scheduler](#h-console-and-scheduler) — [https://laravel.com/framework/docs/12.x/artisan](https://laravel.com/framework/docs/12.x/artisan)
+11. [Run it and make API calls](#s29-end-to-end-demo-script) — [https://laravel.com/framework/docs/12.x/routing](https://laravel.com/framework/docs/12.x/routing)
+12. [Write tests](#i-tests) — [https://laravel.com/framework/docs/12.x/testing](https://laravel.com/framework/docs/12.x/testing)
+13. [Poke at the internals](#24-debugging-toolbox) — [https://laravel.com/framework/docs/12.x/artisan#tinker](https://laravel.com/framework/docs/12.x/artisan#tinker)
+14. [Exercises](#26-study-plan-and-exercises) — [https://laravel.com/framework/docs/12.x/testing](https://laravel.com/framework/docs/12.x/testing)
+15. [Troubleshooting](#25-common-gotchas) — [https://laravel.com/framework/docs/12.x/errors](https://laravel.com/framework/docs/12.x/errors)
+16. [Concept map](#1-the-big-picture-one-request-end-to-end) — [https://laravel.com/framework/docs/12.x/lifecycle](https://laravel.com/framework/docs/12.x/lifecycle)
+
+Items 13–16 point to the companion guide at the top of this file. The other links jump into the walkthrough below.
 
 ---
 
@@ -2402,6 +2403,9 @@ Routes ──► Middleware (request id, admin key) ──► FormRequest (valid
                                                           SyncPostingJob (queue worker)
                                                           ScrapingJobCompleted event → listener
 ```
+
+> **New to the ingestion layer?** Read [Ingestion in plain English](#ingestion-in-plain-english) and
+> [Where the container layer fits](#where-the-container-layer-fits) before starting Q11.
 
 ### Final file tree (what you will create)
 
@@ -2606,6 +2610,107 @@ custom Indeed login email, and one Airwork-enabled company.
 [Learn about Testing and factories](README.md#20-testing) · [View solution](#s10)
 
 ## D. Ingestion layer
+
+### Ingestion in plain English
+
+**Ingestion** means "taking data from the outside world into our system". The scraper sends raw job postings
+from Indeed or Airwork; the ingestion layer decides what to do with each record:
+
+1. Which provider sent it (`indeed` or `airwork`)?
+2. Have we seen this posting before?
+3. Is the content different from last time?
+4. Should we save it and queue a background sync?
+
+A useful analogy is a warehouse receiving desk:
+
+| Warehouse | In this project | Responsibility |
+| --- | --- | --- |
+| Receiving desk | `IngestPostingService` | runs the whole delivery process |
+| Parcel label | `provider` + `external_id` | uniquely identifies the posting |
+| Unpacking station | `IndeedRawStore` / `AirworkRawStore` | handles one provider's records |
+| Shared checklist | `UpsertsPostings` trait | create / unchanged / update rules used by every station |
+| Fingerprint | `row_hash` (SHA-256 of the record) | detects whether the content changed |
+| Staff directory | `ProviderRegistry` | finds the right station by provider name |
+| Loading bay | `SyncPostingJob` | moves new/changed records on in the background |
+
+### Where the container layer fits
+
+"Container" here means Laravel's **service container** — the object factory that builds classes and their
+dependencies for you. It is not Docker. You do not write `new IngestPostingService(new ProviderRegistry(...))`.
+You ask the container for `IngestPostingService` and it builds the chain.
+
+Two lookup tables are involved, and they solve different problems:
+
+| Lookup table | Key | Value | Used by |
+| --- | --- | --- | --- |
+| Laravel service container | class / interface name | constructed object | framework and `app(...)` |
+| `ProviderRegistry` | provider string (`indeed`, `airwork`) | raw store object | `IngestPostingService` |
+
+`AppServiceProvider` connects them:
+
+```php
+$this->app->tag(
+    [IndeedRawStore::class, AirworkRawStore::class],
+    ProviderRawStoreInterface::class,
+);
+
+$this->app->singleton(ProviderRegistry::class, fn ($app): ProviderRegistry => new ProviderRegistry(
+    $app->tagged(ProviderRawStoreInterface::class),
+));
+```
+
+In words:
+
+1. "These two classes implement `ProviderRawStoreInterface`."
+2. "When someone asks for `ProviderRegistry`, build it from all implementations of that interface."
+3. "Keep that registry as a singleton (one shared instance)."
+
+The flow for one record looks like this:
+
+```text
+scraper callback
+  │  provider = "indeed", external_id = "job-123", record = {...}
+  ▼
+IngestPostingService             ← orchestrator
+  │  "registry, who handles indeed?"
+  ▼
+ProviderRegistry                 ← provider-name lookup
+  │  returns IndeedRawStore
+  ▼
+IndeedRawStore                   ← provider adapter
+  │  uses UpsertsPostings trait
+  ▼
+UpsertsPostings::upsertPosting() ← shared create/update logic
+  │  compares provider + external_id + row_hash
+  ▼
+ScrapedPosting row               ← database
+  │  Created or Updated (not Unchanged)
+  ▼
+SyncPostingJob                   ← queued background work
+```
+
+### A worked example
+
+```php
+$ingest = app(App\Services\Ingestion\IngestPostingService::class);
+
+$entry = [
+    'external_id' => 'job-123',
+    'record' => ['title' => 'Backend developer', 'company' => 'Acme'],
+];
+
+$outcome = $ingest->ingest('indeed', $entry);
+```
+
+| Run | What changed | Database result | Queue |
+| --- | --- | --- | --- |
+| 1 | first time we see `job-123` | row inserted, outcome `Created` | `SyncPostingJob` dispatched |
+| 2 | same payload again | row found, hashes match, outcome `Unchanged` | nothing dispatched |
+| 3 | title changed in the payload | row updated, `synced_at` reset, outcome `Updated` | `SyncPostingJob` dispatched |
+
+That is the whole layer: **one orchestrator, one lookup table, one adapter per provider, one shared upsert trait,
+and one queued follow-up job.** The interface exists so the orchestrator never needs to know which provider it is
+talking to; the registry exists so adding a provider does not require an `if` statement in the service.
 
 <a id="q11"></a>
 

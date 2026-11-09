@@ -4,4 +4,5 @@ use App\Http\Controllers\Api\ScrapingController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/companies', [ScrapingController::class, 'index']);
-Route::get('/companies/{company}/scrape-tracker', [ScrapingController::class, 'show']);
+Route::get('/companies/{company}', [ScrapingController::class, 'show']);
+Route::post('/ingest/{provider}', [JobIngestController::class, 'store']);
