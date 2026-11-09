@@ -2,7 +2,6 @@
 
 namespace App\Enums;
 
-
 enum JobSeekerSyncStatusEnum: string
 {
     case Pending = 'pending';

@@ -8,15 +8,14 @@ enum ScrapingJobStatusEnum: string
     case Processing = 'processing';
     case Completed = 'completed';
     case Failed = 'failed';
-    case TimedOut = 'timeout';
+    case TimedOut = 'timed_out';
 
     public function isRetryable(): bool
     {
-        return in_array($this, [
-            self::Pending,
-            self::Failed,
-            self::TimedOut,
-        ], true);
+        return match ($this) {
+            self::Failed, self::TimedOut => true,
+            self::Pending, self::Processing, self::Completed => false,
+        };
     }
 
     public function isTerminal(): bool
@@ -24,7 +23,6 @@ enum ScrapingJobStatusEnum: string
         return match ($this) {
             self::Completed, self::Failed, self::TimedOut => true,
             self::Pending, self::Processing => false,
-            default => false,
         };
     }
 }

@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     use HasAuditableColumns;
+
     /**
      * Run the migrations.
      */

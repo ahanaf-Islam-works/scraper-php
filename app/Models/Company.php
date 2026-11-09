@@ -2,13 +2,12 @@
 
 namespace App\Models;
 
+use App\Exceptions\MissingCredentialsException;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
-use MissingCredentialsException as GlobalMissingCredentialsException;
 
-class Company extends Model
+class Company extends BaseModel
 {
     use HasFactory;
 
@@ -39,6 +38,6 @@ class Company extends Model
             return str_replace('{serial_number}', $this->serial_number, config('scraping.indeed_email_template'));
         }
 
-        throw new GlobalMissingCredentialsException("Company {$this->id} has no Indeed login email");
+        throw new MissingCredentialsException("Company {$this->id} has no Indeed login email");
     }
 }

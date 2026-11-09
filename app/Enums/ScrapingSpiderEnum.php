@@ -10,16 +10,15 @@ enum ScrapingSpiderEnum: string
 
     public function isIndeed(): bool
     {
-
         return match ($this) {
             self::IndeedJobDetails, self::IndeedJobApplications => true,
-            self::AirregiJobs => true
+            self::AirregiJobs => false,
         };
     }
 
     public function provider(): string
     {
-        return $this->isIndeed() ? 'indeed' : 'arrefi';
+        return $this->isIndeed() ? 'indeed' : 'airwork';
     }
 
     public function callbackPath(): string

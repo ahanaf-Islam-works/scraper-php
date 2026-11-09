@@ -18,7 +18,14 @@ class CompanyFactory extends Factory
     public function definition(): array
     {
         return [
-            //
+            'name' => fake()->company(),
+            'serial_number' => null,
+            'airwork_enabled' => false,
         ];
+    }
+
+    public function airwork(): static
+    {
+        return $this->state(['airwork_enabled' => true]);
     }
 }

@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     use HasAuditableColumns;
+
     /**
      * Run the migrations.
      */
@@ -18,7 +19,7 @@ return new class extends Migration
             $table->timestamps();
             $table->string('name');
             $table->string('serial_number')->nullable()->unique();
-            $table->string('airwork_enabled')->default(false);
+            $table->boolean('airwork_enabled')->default(false);
             $this->auditable($table, true);
         });
     }

@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     use HasAuditableColumns;
+
     /**
      * Run the migrations.
      */
@@ -21,7 +22,6 @@ return new class extends Migration
             $table->string('status', 32)->default('pending');
             $table->string('callback_secret', 64);
             $table->unsignedInteger('retry_count')->default(0);
-            $table->text('error_message')->nullable();
             $table->text('error_message')->nullable();
             $table->unsignedInteger('records_created')->default(0);
             $table->unsignedInteger('records_updated')->default(0);

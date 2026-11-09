@@ -2,11 +2,9 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Override;
 
-class ScrapedPosting extends Model
+class ScrapedPosting extends BaseModel
 {
     protected $fillable = [
         'scraping_job_id',
@@ -17,12 +15,11 @@ class ScrapedPosting extends Model
         'synced_at',
     ];
 
-
     protected function casts(): array
     {
         return [
             'payload' => 'array',
-            'synced_at' => 'datetime'
+            'synced_at' => 'datetime',
         ];
     }
 

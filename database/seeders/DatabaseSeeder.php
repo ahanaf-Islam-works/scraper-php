@@ -2,7 +2,7 @@
 
 namespace Database\Seeders;
 
-use App\Models\User;
+use App\Models\Company;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
@@ -15,11 +15,24 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // User::factory(10)->create();
+        Company::query()->updateOrCreate(
+            ['serial_number' => 'S-001'],
+            ['name' => 'Acme (Indeed via serial)', 'airwork_enabled' => false],
+        );
 
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
-        ]);
+        $globex = Company::query()->updateOrCreate(
+            ['name' => 'Globex (custom Indeed login)'],
+            ['serial_number' => null, 'airwork_enabled' => false],
+        );
+
+        $globex->indeedCredentials()->updateOrCreate(
+            ['company_id' => $globex->id],
+            ['email' => 'globex-hr@example.com'],
+        );
+
+        Company::query()->updateOrCreate(
+            ['name' => 'Initech (Airwork)'],
+            ['serial_number' => null, 'airwork_enabled' => true],
+        );
     }
 }
