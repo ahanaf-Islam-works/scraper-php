@@ -2501,6 +2501,10 @@ Create a new Laravel app named `scrape-tracker`, install API support, and config
 (`SCRAPING_ADMIN_API_KEY`), the stale-job timeout in minutes (default 45), and the Indeed email template
 (default `hr.entry.office+{serial_number}@example.com`). Application code must read these only via `config()`.
 
+**Why it matters:** `config/scraping.php` is the single source for the admin key, stale timeout, and Indeed email template.
+Routes, commands, jobs, and services all read these values through `config()`, so one wrong value can break auth or credentials.
+Keeping configuration correct and cache-safe is what lets the same code run locally, in tests, and in production.
+
 [Learn about Config](README.md#19-config-and-environment) · [View solution](#s1)
 
 <a id="q2"></a>
@@ -2512,6 +2516,10 @@ Create `EnsureAdminApiKey` (reads header `X-Admin-Key`, compares in constant tim
 `X-Request-Id` or generates a UUID, adds it to log context, and echoes it on the response). Register the first as
 alias `protected`, append the second to the `api` group, and force JSON rendering of all errors for `api/*` URLs
 in `bootstrap/app.php`.
+
+**Why it matters:** These files form the API's security and observability boundary.
+The admin key blocks every admin route, while the request ID makes each log line traceable across a request.
+JSON error handling keeps failures machine-readable instead of redirecting API clients.
 
 [Learn about Middleware](README.md#5-middleware) · [View solution](#s2)
 
@@ -2526,6 +2534,10 @@ Write a string-backed enum `App\Enums\ScrapingSpiderEnum` with cases `IndeedJobD
 `isIndeed(): bool` (using `match`), `provider(): string` (`'indeed'` or `'airwork'`), and
 `callbackPath(): string` (`/api/scraping-jobs/{value}/complete`).
 
+**Why it matters:** `ScrapingSpiderEnum` is the single source of truth for spider names used in URLs, the database, validation, and scheduling.
+A missing or misspelled case routes work to the wrong provider or makes callbacks fail.
+Every dispatch, callback, and cron entry depends on these values matching exactly.
+
 [Learn about Enums](README.md#11-enums) · [View solution](#s3)
 
 <a id="q4"></a>
@@ -2536,6 +2548,10 @@ Write `App\Enums\ScrapingJobStatusEnum` with cases `Pending`, `Processing`, `Com
 (values `pending`, `processing`, `completed`, `failed`, `timed_out`). Add `isRetryable()` (true for `Failed` and
 `TimedOut`) and `isTerminal()` (true for `Completed`, `Failed`, `TimedOut`), both exhaustive `match` expressions
 with no `default` arm.
+
+**Why it matters:** `ScrapingJobStatusEnum` defines the job lifecycle that the whole scraper relies on.
+Retry, terminal-state checks, dashboards, and stale-job expiry all branch on these cases.
+An incorrect value can leave jobs stuck, retryable when they should be finished, or invisible to the UI.
 
 [Learn about match](README.md#312-match-vs-switch) · [View solution](#s4)
 
@@ -2548,6 +2564,10 @@ Write `IngestOutcomeEnum` (`Created`, `Updated`, `Unchanged`) and `JobSeekerSync
 `static fromIngestOutcome(IngestOutcomeEnum $outcome): self` mapping `Created`/`Updated` to `Pending` and
 `Unchanged` to `Synced`.
 
+**Why it matters:** These enums tell the ingestion layer whether a record is new, changed, or unchanged, and whether it still needs syncing.
+They prevent unnecessary queue work and drive status labels and retry decisions in the API.
+The mapping methods keep that business meaning in one place instead of scattered string comparisons.
+
 [Learn about Enums](README.md#11-enums) · [View solution](#s5)
 
 <a id="q6"></a>
@@ -2556,6 +2576,10 @@ Write `IngestOutcomeEnum` (`Created`, `Updated`, `Unchanged`) and `JobSeekerSync
 
 Create `MissingCredentialsException` and `ScrapingJobAlreadyRunningException` in `App\Exceptions`, both extending
 `RuntimeException` with empty bodies (the type is the information; controllers will map them to 422 and 409).
+
+**Why it matters:** These typed exceptions separate expected business failures from real bugs.
+Controllers can map missing credentials to 422 and an already-running job to 409 without inspecting messages.
+That makes API responses predictable, logs clearer, and tests able to assert on exception types.
 
 [Learn about Exceptions](README.md#314-exceptions) · [View solution](#s6)
 
@@ -2572,6 +2596,10 @@ boolean `airwork_enabled` default false, timestamps. `company_indeed_credentials
 else the template email built from `serial_number`, else throws `MissingCredentialsException`.
 `CompanyIndeedCredential` belongs to `Company`.
 
+**Why it matters:** `Company` and its credential row are the core tenant records for the entire project.
+Every scraping job, eligibility query, and Indeed login resolution starts from a company and its credential or serial number.
+If this model or relation is wrong, dispatch and callback flows fail for every company.
+
 [Learn about Relationships](README.md#13-relationships-and-eager-loading) · [View solution](#s7)
 
 <a id="q8"></a>
@@ -2585,6 +2613,10 @@ nullable `completed_at`, timestamps, and a composite index on `company_id, spide
 `spider` and `status` to the enums and `completed_at` to datetime, hides `callback_secret`, has `company()` and
 `postings()` relations, and an `active()` scope for `Pending` and `Processing`.
 
+**Why it matters:** `ScrapingJob` is the central record that tracks one scraping run from dispatch to callback.
+Its status, secret, counters, and timestamps power retries, stale-job expiry, dashboards, and audit logs.
+A broken schema or cast here affects every admin endpoint and queued workflow.
+
 [Learn about Eloquent models](README.md#12-eloquent-models) · [View solution](#s8)
 
 <a id="q9"></a>
@@ -2596,6 +2628,10 @@ Create `scraped_postings`: `id`, nullable FK `scraping_job_id` (null on delete),
 unique key on `provider, external_id`, and an index on `row_hash`. The model casts `payload` to array and
 `synced_at` to datetime, and belongs to `ScrapingJob`. Then run all migrations.
 
+**Why it matters:** `ScrapedPosting` is the raw landing table for everything the scraper sends back.
+Its provider/external ID pair and row hash make ingestion idempotent and change detection possible.
+Downstream sync jobs and admin browsing depend on this table being accurate.
+
 [Learn about Migrations](README.md#14-migrations) · [View solution](#s9)
 
 <a id="q10"></a>
@@ -2606,6 +2642,10 @@ Fill `CompanyFactory` (fake name, no serial number, `airwork_enabled` false, plu
 `ScrapingJobFactory` (creates its own company, spider `IndeedJobApplications`, status `Pending`, random 40-char
 secret). Write `DatabaseSeeder` creating three companies: one Indeed company with a serial number, one with a
 custom Indeed login email, and one Airwork-enabled company.
+
+**Why it matters:** Factories and the seeder give every developer and test a reproducible starting dataset.
+Factories isolate tests from real data, while the seeder creates one company for each eligibility path.
+Bad seed data makes demos fail and hides bugs in dispatch, credentials, and filtering.
 
 [Learn about Testing and factories](README.md#20-testing) · [View solution](#s10)
 
@@ -2722,6 +2762,10 @@ Create an interface with `provider(): string` and
 `upsertPosting(...)` finds by `provider + external_id`, creates it (`Created`), reports `Unchanged` when the hash
 matches, or updates it, resets `synced_at` to null, and reports `Updated`.
 
+**Why it matters:** The interface and trait are the contract and shared engine of the ingestion layer.
+Every provider store promises the same methods, while the trait keeps dedupe, update, and hash logic identical.
+This is what lets the project add providers without copying fragile upsert code.
+
 [Learn about interfaces and traits](README.md#37-inheritance-interfaces-traits) · [View solution](#s11)
 
 <a id="q12"></a>
@@ -2730,6 +2774,10 @@ matches, or updates it, resets `synced_at` to null, and reports `Updated`.
 
 Create two classes implementing the interface and using the trait. `IndeedRawStore::provider()` returns
 `'indeed'`, `AirworkRawStore::provider()` returns `'airwork'`, and each `upsert()` delegates to `upsertPosting()`.
+
+**Why it matters:** These two classes are the provider adapters that actually write scraped records.
+They isolate Indeed and Airwork differences behind one interface, so the orchestrator stays provider-agnostic.
+A defect in one store stops that provider's ingestion without breaking the other.
 
 [Learn about the registry pattern](README.md#84-the-registry-pattern-used-in-this-project) · [View solution](#s12)
 
@@ -2741,6 +2789,10 @@ Write `ProviderRegistry` taking an `iterable` of raw stores, indexing them by `p
 `rawStore(string $provider)` that throws `InvalidArgumentException` for unknown keys. In `AppServiceProvider`,
 tag both stores under the interface and register the registry as a singleton built from the tagged stores.
 
+**Why it matters:** `ProviderRegistry` turns a provider string from a callback into the correct store object.
+The container wiring builds it once from tagged implementations, so adding a provider needs no edits in the service.
+If this mapping is wrong, callbacks fail with “unknown provider” or write through the wrong adapter.
+
 [Learn about the service container](README.md#8-service-container-dependency-injection-providers) · [View solution](#s13)
 
 <a id="q14"></a>
@@ -2749,6 +2801,10 @@ tag both stores under the interface and register the registry as a singleton bui
 
 Create a queued job taking `int $postingId`, with `$tries = 3`. `handle()` loads the posting, returns quietly if it
 no longer exists (idempotent), sets `synced_at` to now, and logs the sync.
+
+**Why it matters:** `SyncPostingJob` moves slower downstream work out of the callback request.
+It keeps the API responsive and retries failed syncs up to three times.
+Because it is idempotent, repeated or delayed runs cannot corrupt the synced data.
 
 [Learn about Jobs and queues](README.md#16-jobs-and-queues) · [View solution](#s14)
 
@@ -2760,6 +2816,10 @@ Write `IngestPostingService::ingest(string $provider, array $entry, ?int $scrapi
 It hashes `$entry['record']` with SHA-256, asks the registry for the provider's store, upserts, destructures the
 returned tuple, dispatches `SyncPostingJob` unless the outcome is `Unchanged`, and returns the outcome.
 
+**Why it matters:** `IngestPostingService` is the single entry point for turning a callback record into a stored posting.
+It hashes the payload, finds the right provider store, upserts, and decides whether to queue a sync.
+Any bug here affects deduplication, change detection, and queue volume for every provider.
+
 [Learn about Services](README.md#10-services-your-business-logic-layer) · [View solution](#s15)
 
 ## E. Events
@@ -2770,6 +2830,10 @@ returned tuple, dispatches `SyncPostingJob` unless the outcome is `Unchanged`, a
 
 Create the event (holds a `ScrapingJob`) and a queued listener that logs the job id, status, created count, and
 updated count. Rely on listener auto-discovery (no manual registration).
+
+**Why it matters:** The event and listener decouple “a job finished” from what should happen next.
+The service only fires the event, while logging, notifications, or exports can subscribe later without changing it.
+That keeps the core scraping flow stable as post-completion behaviour grows.
 
 [Learn about Events](README.md#17-events-and-listeners) · [View solution](#s16)
 
@@ -2788,6 +2852,10 @@ per-record ingest with counts, one try/catch per record, then fires the event); 
 `dispatchAll(spider): Collection` (skips companies that throw); and `eligibleCompaniesQuery(spider): Builder`
 (Indeed: custom email or serial number; Airwork: `airwork_enabled`). Credential building uses `match (true)`.
 
+**Why it matters:** `ScrapingJobService` is the heart of the scraping workflow.
+It prevents duplicate jobs with locks, selects eligible companies, creates jobs, ingests callbacks, and handles retries.
+A bug here can double-scrape companies, lose records, or leave operators unable to recover failed runs.
+
 [Learn about Facades and cache locks](README.md#cache-locks-used-by-dispatch) · [View solution](#s17)
 
 ## G. HTTP layer
@@ -2800,6 +2868,10 @@ Trigger: `company_id` required integer that exists, `spider` optional and a vali
 required (max 255), `serial_number` nullable, unique, max 64, `airwork_enabled` optional boolean, `indeed_email`
 nullable email. Both authorize everyone (the route middleware guards access).
 
+**Why it matters:** These Form Requests are the gatekeepers for admin-created jobs and companies.
+They enforce enum values, existing company IDs, unique serial numbers, and email shape before anything touches the database.
+Without them, invalid input reaches the service layer and produces inconsistent jobs or companies.
+
 [Learn about Form Requests](README.md#7-form-requests-validation-and-authorization) · [View solution](#s18)
 
 <a id="q19"></a>
@@ -2811,6 +2883,10 @@ Authorize by signature: load the job from `job_id` (memoised with `??=`, exposed
 header. Rules: `job_id` required integer, `status` in `success|failed`, optional `records` array, each with required
 string `external_id` (max 255) and required array `record`.
 
+**Why it matters:** This request authenticates the machine-to-machine scraper callback.
+It verifies the HMAC over the exact raw body before any record is trusted or stored.
+Without it, anyone who guesses a job ID could inject fake postings into the system.
+
 [Learn about authorization in requests](README.md#7-form-requests-validation-and-authorization) · [View solution](#s19)
 
 <a id="q20"></a>
@@ -2820,6 +2896,10 @@ string `external_id` (max 255) and required array `record`.
 Create `ScrapingJobResource` (id, company id and name when loaded, spider and status values, retry count, error
 message, nested record counters, `is_terminal`, ISO dates; never the secret), `CompanyResource` (including the
 Indeed email when the relation is loaded), and `PostingResource`.
+
+**Why it matters:** These resources define the stable JSON contract between the API and its clients.
+They hide internal columns such as `callback_secret` and expose only the fields the admin UI needs.
+`whenLoaded` also prevents hidden extra queries when a relation was not eager-loaded.
 
 [Learn about API Resources](README.md#15-api-resources) · [View solution](#s20)
 
@@ -2831,6 +2911,10 @@ Indeed email when the relation is loaded), and `PostingResource`.
 defaults `airwork_enabled` to false, creates the company and optional credentials inside one transaction, and
 returns 201 with the resource.
 
+**Why it matters:** `CompanyController` is the admin entry point for listing and creating companies.
+Creation must write the company and optional Indeed credential atomically, or the two tables drift apart.
+Eager loading keeps the company list fast as the number of tenants grows.
+
 [Learn about Controllers](README.md#6-controllers) · [View solution](#s21)
 
 <a id="q22"></a>
@@ -2838,6 +2922,10 @@ returns 201 with the resource.
 ### Q22. `PostingController`
 
 `index()` returns scraped postings, newest first, 15 per page, with an optional `provider` query filter.
+
+**Why it matters:** `PostingController` gives operators visibility into the raw records the scraper stored.
+Provider filtering and pagination keep that view usable when thousands of postings arrive.
+It is often the first place a bad scrape or ingestion bug becomes visible.
 
 [Learn about Eloquent queries](README.md#12-eloquent-models) · [View solution](#s22)
 
@@ -2850,6 +2938,10 @@ Actions: `index` (filters `company_id`, `status`, `per_page` 1-100, eager-loaded
 422 on missing credentials; default spider `AirregiJobs`), `triggerAll`, and `retry` (422 when not retryable,
 201 on success).
 
+**Why it matters:** `ScrapingJobController` is the main admin control surface for scraping.
+It triggers jobs, reports running status, lists history, and retries failures.
+Its exception mapping turns expected service failures into clear 409 or 422 responses instead of 500s.
+
 [Learn about Controllers and binding](README.md#4-routing) · [View solution](#s23)
 
 <a id="q24"></a>
@@ -2859,6 +2951,10 @@ Actions: `index` (filters `company_id`, `status`, `per_page` 1-100, eager-loaded
 Resolve the `{spider}` URL segment to the enum (404 if unknown), abort with 422 when it does not match the job's
 spider, call `handleComplete()` with named arguments, and return the job resource.
 
+**Why it matters:** `ScrapingJobCompleteController` is the API endpoint the scraper calls when work finishes.
+It resolves the spider, checks it matches the job, and hands the records to the ingestion service.
+A mistake here can accept the wrong provider's payload or report results against the wrong job.
+
 [Learn about invokable controllers](README.md#38-invokable-classes-and-anonymous-classes) · [View solution](#s24)
 
 <a id="q25"></a>
@@ -2867,6 +2963,10 @@ spider, call `handleComplete()` with named arguments, and return the job resourc
 
 Group all admin routes under `/admin` with the `protected` middleware. Declare `scraping-jobs/status` before
 `scraping-jobs/{scrapingJob}`. Add the unprotected HMAC callback route `POST scraping-jobs/{spider}/complete`.
+
+**Why it matters:** `routes/api.php` is the public contract for every client and the scraper.
+It separates admin-key routes from the HMAC callback route and fixes the order of wildcard routes.
+A wrong route or middleware assignment can expose admin actions or make callbacks unreachable.
 
 [Learn about Routing](README.md#4-routing) · [View solution](#s25)
 
@@ -2879,6 +2979,10 @@ Group all admin routes under `/admin` with the `protected` middleware. Declare `
 Signature `scraping:dispatch-companies {--spider=airregi-jobs}`. Reject unknown spiders with a failure exit code,
 print the number of eligible companies, dispatch all, and print the dispatched count.
 
+**Why it matters:** `ScrapingDispatchCompanies` is the cron entry point that starts scraping without a human.
+It validates the spider and reuses the same eligibility query as the HTTP trigger, so the two cannot drift.
+If this command fails, scheduled scraping silently stops and data goes stale.
+
 [Learn about Artisan commands](README.md#18-console-commands-and-the-scheduler) · [View solution](#s26)
 
 <a id="q27"></a>
@@ -2889,6 +2993,10 @@ Signature `scraper:simulate {job} {--fail} {--update}`. It builds three fake rec
 once, signs that exact string with the job's secret, and POSTs it to the job's callback URL with Laravel's HTTP
 client. `--fail` reports a failure; `--update` changes the first record's title.
 
+**Why it matters:** `SimulateScraper` lets developers exercise the full callback flow without the real Python scraper.
+It signs the exact JSON body and posts it to the API, matching the production security model.
+That makes callback bugs reproducible and keeps demos independent of external infrastructure.
+
 [Learn about the callback walkthrough](README.md#22-walkthrough-tracing-the-scraper-callback) · [View solution](#s27)
 
 <a id="q28"></a>
@@ -2897,6 +3005,10 @@ client. `--fail` reports a failure; `--update` changes the first record's title.
 
 In `routes/console.php`, schedule `scraping:dispatch-companies` for each of the three spiders: Airregi 06:30,
 Indeed details 07:15, Indeed applications 07:30, all `Asia/Tokyo`, `onOneServer()` and `withoutOverlapping()`.
+
+**Why it matters:** The schedule automates daily dispatch for all three spiders.
+Timezone, single-server, and overlap settings prevent duplicate or missed runs in production.
+Without it, companies are only scraped when someone manually triggers them.
 
 [Learn about the Scheduler](README.md#18-console-commands-and-the-scheduler) · [View solution](#s28)
 
@@ -2907,6 +3019,10 @@ Indeed details 07:15, Indeed applications 07:30, all `Asia/Tokyo`, `onOneServer(
 Write `scripts/demo.sh`, a bash script that walks through the API with `curl`: missing key (401), list and create
 companies, trigger (201), duplicate trigger (409), status, simulate callback, unchanged re-run, updated re-run, bad
 signature (403), failure, retry (201), and retrying a completed job (422).
+
+**Why it matters:** `scripts/demo.sh` is an executable acceptance test for the whole API.
+It covers auth, validation, conflicts, callbacks, idempotency, retries, and error responses with real HTTP calls.
+It doubles as onboarding documentation and a quick regression check after changes.
 
 [Learn about the debugging toolbox](README.md#24-debugging-toolbox) · [View solution](#s29)
 
@@ -2919,6 +3035,10 @@ signature (403), failure, retry (201), and retrying a completed job (422).
 Test: admin key required, Indeed dispatch via serial-number fallback (201, no secret in JSON, row in DB), second
 dispatch returns 409, Airwork spider without access returns 422, invalid spider fails validation.
 
+**Why it matters:** `TriggerScrapingJobTest` protects the most important admin action: starting a scrape.
+It proves the admin key is required, eligibility is enforced, and duplicate triggers return 409.
+Regressions here would break the operator's primary workflow.
+
 [Learn about Testing](README.md#20-testing) · [View solution](#s30)
 
 <a id="q31"></a>
@@ -2928,6 +3048,10 @@ dispatch returns 409, Airwork spider without access returns 422, invalid spider 
 Test with a signing helper that signs the raw body: bad signature gives 403 and stores nothing, a valid callback
 stores records and pushes two `SyncPostingJob`s, resending the same data reports `unchanged` and pushes nothing new,
 and a malformed record gives a validation error on `records.0.external_id`.
+
+**Why it matters:** `ScrapingJobCompleteTest` protects the ingestion callback, where data enters the system.
+It verifies signatures, record validation, idempotent re-sends, and sync dispatch counts.
+A regression here risks accepting forged data or duplicating records.
 
 [Learn about Testing](README.md#20-testing) · [View solution](#s31)
 
@@ -2939,6 +3063,10 @@ Test that `trigger-all` and the Artisan command only dispatch to eligible compan
 email; Airwork: `airwork_enabled`), that an unknown spider fails the command, and that an Airwork-only company is
 never selected for an Indeed spider.
 
+**Why it matters:** These tests ensure the right spider only selects the right companies.
+They guard the shared eligibility query used by the HTTP trigger, the command, and the scheduler.
+A mistake would scrape the wrong provider or waste jobs on ineligible companies.
+
 [Learn about spider-aware selection](README.md#183-why-spider-aware-company-selection-matters) · [View solution](#s32)
 
 <a id="q33"></a>
@@ -2947,6 +3075,10 @@ never selected for an Indeed spider.
 
 Write a plain PHPUnit unit test (no database) covering `provider()`, `callbackPath()`, `tryFrom()` returning null,
 the status helpers, and `fromIngestOutcome()`.
+
+**Why it matters:** `EnumsTest` locks down enum values and business helper methods.
+Those values are stored in the database and compared across validation, HTTP output, and retry logic.
+Fast unit tests catch accidental renames before they corrupt data or break clients.
 
 [Learn about Enums](README.md#11-enums) · [View solution](#s33)
 
@@ -2962,6 +3094,10 @@ Generate model, migration, and factory together. Table: `external_application_id
 timestamps. Model: fillable, casts (array, `JobSeekerSyncStatusEnum`, datetime), `jobSeekerUser()` relation,
 `pendingSync()` and `forJobSeeker()` scopes. Factory: realistic definition plus `synced()` and `failed()` states.
 
+**Why it matters:** This model and migration store scraped job applications for the applicants extension.
+The unique external application ID prevents duplicate applicants, and the sync status drives retry behaviour.
+The factory makes the whole feature testable without real applicant data.
+
 [Learn about Eloquent models](README.md#12-eloquent-models) · [View solution](#s34)
 
 <a id="q35"></a>
@@ -2970,6 +3106,10 @@ timestamps. Model: fillable, casts (array, `JobSeekerSyncStatusEnum`, datetime),
 
 Four tests: casts (array, enum, Carbon), the `jobSeekerUser` relation, the `pendingSync()` scope, and the unique
 `external_application_id` constraint throwing `QueryException`.
+
+**Why it matters:** This test proves the application model's casts, relation, scope, and uniqueness constraint.
+Those details decide whether the API returns arrays, enums, and related users correctly.
+It catches schema or model drift before the applicants UI sees broken data.
 
 [Learn about Database testing](README.md#20-testing) · [View solution](#s35)
 
@@ -2980,6 +3120,10 @@ Four tests: casts (array, enum, Carbon), the `jobSeekerUser` relation, the `pend
 Add `GET /api/admin/applications` (filters `sync_status` via `Rule::enum`, `job_seeker_user_id`, `per_page`;
 paginated) and `GET /api/admin/applications/{indeedJobApplication}`. The resource exposes the status value, its
 label, and whether a sync retry is allowed. Provide the full updated `routes/api.php` and a feature test.
+
+**Why it matters:** The applications API exposes applicant data to the admin UI with filters and pagination.
+It returns status labels and retry flags so the frontend does not duplicate business rules.
+It is the contract that makes the applicants extension usable by operators.
 
 [Learn about API Resources](README.md#15-api-resources) · [View solution](#s36)
 
@@ -2993,6 +3137,10 @@ Create `scraping:expire-stale`, which marks `Pending`/`Processing` jobs older th
 (with an error message and `completed_at`) and prints the count. Schedule it every 15 minutes (one server, no
 overlap). Provide the full updated `routes/console.php` and a test that also proves the expired job becomes
 retryable.
+
+**Why it matters:** `scraping:expire-stale` keeps job status honest when a scraper never calls back.
+It marks old pending/processing jobs as timed out, which unblocks dispatch and enables retry.
+Without it, dashboards show jobs running forever and operators cannot recover them.
 
 [Learn about the Scheduler](README.md#18-console-commands-and-the-scheduler) · [View solution](#s37)
 
