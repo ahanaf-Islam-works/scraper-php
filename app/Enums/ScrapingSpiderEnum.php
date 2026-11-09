@@ -12,6 +12,18 @@ enum ScrapingSpiderEnum: string
     {
 
         return match ($this) {
+            self::IndeedJobDetails, self::IndeedJobApplications => true,
+            self::AirregiJobs => true
         };
+    }
+
+    public function provider(): string
+    {
+        return $this->isIndeed() ? 'indeed' : 'arrefi';
+    }
+
+    public function callbackPath(): string
+    {
+        return "/api/scraping-jobs/{$this->value}/complete";
     }
 }
