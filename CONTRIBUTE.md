@@ -510,6 +510,672 @@ real project.
 
 ---
 
+# Laravel Queues and Batches: A Step-by-Step Lab
+
+## What the client wants
+
+The client is a small newsletter business that needs to load big contact lists without freezing its admin page, and to welcome every new contact exactly once. The client below is made up, to give the lab a real purpose.
+
+_"Hi, I run a small newsletter. Every week someone sends me a spreadsheet with thousands of names and emails from events and partner lists, and I have to get them into our system. Right now the admin page freezes for minutes while the file loads, and if something breaks halfway, nobody can tell me what went in and what did not._
+
+_Here is what I need:_
+
+1. _When I start an import, the page answers straight away and the work happens in the background._
+2. _I can see how far along the import is, as a percentage, without asking a developer._
+3. _If one part of the file fails, only that part is redone, not the whole file. If the same person appears twice, they must not be added twice._
+4. _Every new contact gets a welcome message. Our email provider is unreliable, so the system should try again a few times, and never message the same person twice._
+5. _If I start an import by mistake, I can stop it._
+
+_I am not technical. I just need to know it is safe to press the button."_
+
+Here is where each request is built in this lab:
+
+| The client asks for                                 | Built with                                    | Step    |
+| --------------------------------------------------- | --------------------------------------------- | ------- |
+| A page that does not freeze; work in the background | Queued jobs and a worker                      | 2 and 3 |
+| Visible progress                                    | A batch and a progress endpoint               | 5       |
+| Redo only the failed part, no duplicates            | Chunk jobs, `upsert`, `queue:retry-batch`     | 4 and 6 |
+| Welcome message with retries, never twice           | `tries`, `backoff()`, the `welcomed_at` check | 2       |
+| Stop a mistaken import                              | Cancelling a batch                            | 6       |
+
+## What you will build
+
+You will build a small contact app where welcome messages go through a queue and contacts are imported through a batch, so you see both ideas working on one table.
+
+A **queue** is a waiting line of jobs. Your code drops a job into the line and returns at once; a separate **worker** process picks jobs up and runs them. A **batch** is a group of jobs tracked as one unit: you get progress, an "all done" callback, and cancel and retry for the whole group.
+
+Every step below repeats this flow:
+
+1. Your code (a command or a controller) calls `dispatch`.
+2. Laravel stores the job as a row in the `jobs` table.
+3. A worker (`php artisan queue:work`) reads the row, runs the job's `handle()` method, and deletes the row.
+4. If `handle()` throws, the worker retries the job, and after the last try moves it to `failed_jobs`.
+
+| Step | You build                                   | You learn                                      |
+| ---- | ------------------------------------------- | ---------------------------------------------- |
+| 1    | `Contact` model, migration, factory         | The data both parts use                        |
+| 2    | `SendWelcomeMessage` job                    | Jobs, named queues, tries, backoff, `failed()` |
+| 3    | `contacts:welcome` command                  | Dispatching, delays, running a worker          |
+| 4    | `ImportContactsChunk` job                   | Batchable jobs, upsert, cancellation checks    |
+| 5    | `import:start` command and a progress route | `Bus::batch`, callbacks, progress              |
+| 6    | Failure experiments                         | Failed jobs, `queue:retry-batch`, cancel       |
+
+This guide needs Laravel 11 or newer. The code follows the Laravel 11+ APIs, but I could not run it while writing, so if a step errors, check the problems table at the end first.
+
+## Step 0: Create the project and start three terminals
+
+A fresh Laravel project already has everything a queue needs, so setup is three commands.
+
+```bash
+composer create-project laravel/laravel queue-lab
+cd queue-lab
+php artisan migrate
+```
+
+What these give you:
+
+- The new app defaults to SQLite and `QUEUE_CONNECTION=database` in `.env`. Check that line; it tells Laravel to keep jobs in a database table instead of running them instantly.
+- The default migration `0001_01_01_000002_create_jobs_table` creates three tables: `jobs` (waiting jobs), `job_batches` (one row per batch) and `failed_jobs` (jobs that ran out of tries). Check with `php artisan migrate:status`.
+- You can use the Postgres container from earlier instead: set the `DB_*` values in `.env` and run `php artisan migrate` again. The queue tables are the same.
+
+This lab uses three terminals, all opened in the `queue-lab` folder:
+
+| Terminal | Command                                         | Purpose                                               |
+| -------- | ----------------------------------------------- | ----------------------------------------------------- |
+| 1        | `php artisan serve`                             | Web server, used for the batch progress URL in Step 5 |
+| 2        | `php artisan queue:work --queue=default,emails` | The worker that runs jobs                             |
+| 3        | `php artisan ...`                               | Where you run the commands from each step             |
+
+Two habits to learn now:
+
+- `--queue=default,emails` tells the worker to check the `default` queue first, then `emails`. Jobs on a queue nobody listens to wait forever.
+- A worker loads your code once and keeps it in memory. After you edit a job class, stop the worker with Ctrl+C and start it again, or run `php artisan queue:restart`.
+
+For live feedback, run `tail -f storage/logs/laravel.log` in a fourth terminal; every job in this lab writes its result there.
+
+## Step 1: Create the Contact model, table, factory and seeder
+
+Both the queue part and the batch part work on one `contacts` table, so you build it first.
+
+```bash
+php artisan make:model Contact -mf
+```
+
+`-m` creates a migration and `-f` creates a factory. Replace the migration file `database/migrations/<timestamp>_create_contacts_table.php` with:
+
+```php
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('contacts', function (Blueprint $table): void {
+            $table->id();
+            $table->string('name');
+            $table->string('email')->unique();
+            $table->timestamp('welcomed_at')->nullable();
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('contacts');
+    }
+};
+```
+
+Replace `app/Models/Contact.php` with:
+
+```php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Contact extends Model
+{
+    use HasFactory;
+
+    protected $fillable = ['name', 'email', 'welcomed_at'];
+
+    protected function casts(): array
+    {
+        return ['welcomed_at' => 'datetime'];
+    }
+}
+```
+
+Replace `database/factories/ContactFactory.php` with:
+
+```php
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Contact;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/** @extends Factory<Contact> */
+class ContactFactory extends Factory
+{
+    public function definition(): array
+    {
+        return [
+            'name' => fake()->name(),
+            'email' => fake()->unique()->safeEmail(),
+        ];
+    }
+}
+```
+
+Replace `database/seeders/DatabaseSeeder.php` with:
+
+```php
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Contact;
+use Illuminate\Database\Seeder;
+
+class DatabaseSeeder extends Seeder
+{
+    public function run(): void
+    {
+        Contact::factory()->count(10)->create();
+    }
+}
+```
+
+Then create the table and the ten sample contacts:
+
+```bash
+php artisan migrate
+php artisan db:seed
+```
+
+Why it looks like this:
+
+- `email` is **unique**. Step 4 relies on that to import the same person twice without creating a duplicate row.
+- `welcomed_at` starts as `null`. A job can check it before sending, so running the same job twice never sends two messages. A job that is safe to run twice is called **idempotent**, and queues need it because a job can be retried.
+- `$fillable` lists the columns that `create()`, `update()` and `upsert()` may set from an array (mass assignment).
+- The `casts()` method makes `$contact->welcomed_at` a Carbon date object instead of a plain string.
+- A factory builds fake rows. `fake()->unique()` guarantees the ten fake emails differ from each other.
+
+## Step 2: Write your first queued job, SendWelcomeMessage
+
+A job is a class whose `handle()` method does the slow work later, inside a worker. This one pretends to send a welcome email and fails on purpose some of the time, so you can watch retries happen.
+
+```bash
+php artisan make:job SendWelcomeMessage
+```
+
+Replace `app/Jobs/SendWelcomeMessage.php` with:
+
+```php
+<?php
+
+namespace App\Jobs;
+
+use App\Models\Contact;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Log;
+use RuntimeException;
+use Throwable;
+
+class SendWelcomeMessage implements ShouldQueue
+{
+    use Dispatchable, InteractsWithQueue, Queueable;
+
+    /** Run at most 3 times in total (1 first try + 2 retries). */
+    public int $tries = 3;
+
+    public function __construct(public int $contactId)
+    {
+        $this->onQueue('emails');
+    }
+
+    /** Seconds to wait before retry 1 and before retry 2. */
+    public function backoff(): array
+    {
+        return [2, 5];
+    }
+
+    public function handle(): void
+    {
+        $contact = Contact::find($this->contactId);
+
+        // Idempotent: a deleted or already welcomed contact is skipped.
+        if ($contact === null || $contact->welcomed_at !== null) {
+            return;
+        }
+
+        // Pretend the mail server is flaky: 40% of the first two attempts fail.
+        if ($this->attempts() < $this->tries && random_int(1, 100) <= 40) {
+            throw new RuntimeException("Mail server hiccup on attempt {$this->attempts()}");
+        }
+
+        Log::info("Welcome sent to {$contact->email} on attempt {$this->attempts()}");
+
+        $contact->update(['welcomed_at' => now()]);
+    }
+
+    /** Called once, after the last try has failed. */
+    public function failed(Throwable $e): void
+    {
+        Log::error("Gave up on contact {$this->contactId}: {$e->getMessage()}");
+    }
+}
+```
+
+What each part does:
+
+- `implements ShouldQueue` is the switch that makes `dispatch()` store the job instead of running it right away. Without it the job runs inside the request or command.
+- The traits add the helpers: `Dispatchable` gives `SendWelcomeMessage::dispatch(...)`, `Queueable` gives `onQueue()` and `delay()`, and `InteractsWithQueue` gives `attempts()`.
+- The constructor takes an **id, not a model**. The job is saved as text in the `jobs` table, and a small id is cheap and still fresh when the worker loads the row with `Contact::find()`.
+- `onQueue('emails')` puts these jobs on a named queue. Different queues let you run separate workers or give urgent work priority.
+- `$tries = 3` and `backoff()` control retries. An exception in `handle()` is not the end: Laravel waits 2 seconds, tries again, waits 5 seconds, tries a third time.
+- `failed()` runs once after the last try fails, a good place to alert someone. The job then lands in the `failed_jobs` table.
+
+## Step 3: Dispatch the jobs from a command and run a worker
+
+Dispatching only stores a job; nothing is sent until a worker runs. This step makes that visible.
+
+```bash
+php artisan make:command SendWelcomeMessages --command=contacts:welcome
+```
+
+Replace `app/Console/Commands/SendWelcomeMessages.php` with:
+
+```php
+<?php
+
+namespace App\Console\Commands;
+
+use App\Jobs\SendWelcomeMessage;
+use App\Models\Contact;
+use Illuminate\Console\Command;
+
+class SendWelcomeMessages extends Command
+{
+    protected $signature = 'contacts:welcome
+        {--limit=10 : How many contacts to message}
+        {--delay=0 : Seconds between each message}';
+
+    protected $description = 'Queue a welcome message for contacts that have not received one';
+
+    public function handle(): int
+    {
+        $limit = (int) $this->option('limit');
+        $delay = (int) $this->option('delay');
+
+        $ids = Contact::query()
+            ->whereNull('welcomed_at')
+            ->orderBy('id')
+            ->limit($limit)
+            ->pluck('id');
+
+        foreach ($ids as $position => $id) {
+            SendWelcomeMessage::dispatch($id)
+                ->delay(now()->addSeconds($position * $delay));
+        }
+
+        $this->info("Queued {$ids->count()} welcome message(s). Start a worker to process them.");
+
+        return self::SUCCESS;
+    }
+}
+```
+
+How it works:
+
+- `SendWelcomeMessage::dispatch($id)` inserts one row into `jobs` and returns in milliseconds. The command is already finished while the emails are still waiting.
+- `->delay(...)` tells the worker not to touch the job before that time. With `--delay=3` the ten jobs become available 0, 3, 6, ... seconds from now, which is a simple way to avoid hammering an email service.
+- Command files in `app/Console/Commands` are found automatically.
+
+Try it in this order:
+
+1. In terminal 2 do **not** start the worker yet. Run `php artisan contacts:welcome` in terminal 3.
+2. Run `php artisan tinker`, then `DB::table('jobs')->count()`. You should see `10`: the jobs are waiting.
+3. Start the worker in terminal 2: `php artisan queue:work --queue=default,emails`.
+4. Watch the worker output. Each job prints a line with `RUNNING`, then `DONE` or `FAIL`. A `FAIL` followed by a later `DONE` for the same job is a retry that worked.
+5. Open `storage/logs/laravel.log`. You should find `Welcome sent to ...` lines that show `on attempt 2` or `on attempt 3` for the jobs that hiccuped.
+6. Run `php artisan contacts:welcome` again. Nothing is queued because every contact now has `welcomed_at` set.
+
+Because the failure is random, your output will differ from run to run. To see the delay, reset the contacts in tinker with `App\Models\Contact::query()->update(['welcomed_at' => null]);` and run `php artisan contacts:welcome --delay=3`.
+
+## Step 4: Write the batchable job, ImportContactsChunk
+
+Importing 10,000 rows as one job is slow and all-or-nothing, so you split the rows into chunks and make each chunk its own job. A batch then tracks all the chunks together.
+
+```bash
+php artisan make:job ImportContactsChunk
+```
+
+Replace `app/Jobs/ImportContactsChunk.php` with:
+
+```php
+<?php
+
+namespace App\Jobs;
+
+use App\Models\Contact;
+use Illuminate\Bus\Batchable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Cache;
+use RuntimeException;
+
+class ImportContactsChunk implements ShouldQueue
+{
+    use Batchable, Dispatchable, InteractsWithQueue, Queueable;
+
+    public int $tries = 2;
+
+    /** @param array<int, array{name: string, email: string}> $rows */
+    public function __construct(public array $rows, public int $chunkNumber) {}
+
+    public function handle(): void
+    {
+        // A cancelled batch still has jobs waiting in the queue; they must exit quickly.
+        if ($this->batch()?->cancelled()) {
+            return;
+        }
+
+        // Demo switch: `import:start --fail-chunk=3` stores the number in the cache.
+        if (Cache::get('lab.fail_chunk') === $this->chunkNumber) {
+            throw new RuntimeException("Chunk {$this->chunkNumber} failed on purpose");
+        }
+
+        // Pretend the work is slow, so you can watch the progress move.
+        usleep(500_000);
+
+        Contact::upsert($this->rows, ['email'], ['name']);
+    }
+}
+```
+
+What is new compared with Step 2:
+
+- The `Batchable` trait adds `$this->batch()`, which returns the batch this job belongs to, or `null` when the job was dispatched alone. That is why the code uses `?->`.
+- The `cancelled()` check matters. Cancelling a batch does not delete queued jobs; each one still runs, so each one must check and return early.
+- `Contact::upsert($rows, ['email'], ['name'])` means: insert all rows in one SQL statement, but if a row's `email` already exists, only update its `name`. Running the same chunk twice therefore never creates duplicates, which makes the job safe to retry. Eloquent fills `created_at` and `updated_at` for you.
+- Each job carries 100 rows in its payload, which is fine. For a real CSV file, store the file first and pass only its path and a line range to the job.
+- `$tries = 2` means a failing chunk gets one retry before it is marked failed.
+- The `Cache::get('lab.fail_chunk')` line is only a classroom switch. It lets Step 6 make one chosen chunk fail, then "fix" it by deleting the cache key, without editing code or restarting the worker.
+
+## Step 5: Start a batch from a command and show its progress
+
+This step builds the batch itself and a small web endpoint that reports how far it has got.
+
+```bash
+php artisan make:command StartImport --command=import:start
+php artisan make:controller BatchStatusController --invokable
+```
+
+Replace `app/Console/Commands/StartImport.php` with:
+
+```php
+<?php
+
+namespace App\Console\Commands;
+
+use App\Jobs\ImportContactsChunk;
+use Illuminate\Bus\Batch;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+use Throwable;
+
+class StartImport extends Command
+{
+    protected $signature = 'import:start
+        {count=500 : How many fake contacts to import}
+        {--chunk=100 : Rows per job}
+        {--fail-chunk= : Chunk number that should fail (demo)}';
+
+    protected $description = 'Import fake contacts as a batch of chunk jobs';
+
+    public function handle(): int
+    {
+        $count = (int) $this->argument('count');
+        $size = max(1, (int) $this->option('chunk'));
+        $failChunk = $this->option('fail-chunk');
+
+        Cache::forget('lab.fail_chunk');
+        if ($failChunk !== null && $failChunk !== '') {
+            Cache::put('lab.fail_chunk', (int) $failChunk, now()->addHour());
+        }
+
+        // 1. Pretend these rows came from a CSV file.
+        $rows = [];
+        for ($i = 1; $i <= $count; $i++) {
+            $rows[] = ['name' => "Imported Person {$i}", 'email' => "person{$i}@import.test"];
+        }
+
+        // 2. One job per chunk of rows.
+        $jobs = [];
+        foreach (array_chunk($rows, $size) as $index => $chunk) {
+            $jobs[] = new ImportContactsChunk($chunk, $index + 1);
+        }
+
+        // 3. Group the jobs into one batch.
+        $batch = Bus::batch($jobs)
+            ->name("Import {$count} contacts")
+            ->allowFailures()
+            ->then(function (Batch $batch): void {
+                Log::info("Batch {$batch->id}: every job succeeded");
+            })
+            ->catch(function (Batch $batch, Throwable $e): void {
+                Log::warning("Batch {$batch->id}: first failure: {$e->getMessage()}");
+            })
+            ->finally(function (Batch $batch): void {
+                Log::info("Batch {$batch->id}: finished with {$batch->failedJobs} failed job(s)");
+            })
+            ->dispatch();
+
+        $this->info('Dispatched '.count($jobs)." jobs in batch {$batch->id}");
+        $this->line("Progress: http://127.0.0.1:8000/batches/{$batch->id}");
+
+        return self::SUCCESS;
+    }
+}
+```
+
+Replace `app/Http/Controllers/BatchStatusController.php` with:
+
+```php
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Bus;
+
+class BatchStatusController extends Controller
+{
+    public function __invoke(string $id): JsonResponse
+    {
+        $batch = Bus::findBatch($id);
+
+        abort_if($batch === null, 404, 'Batch not found');
+
+        return response()->json([
+            'id' => $batch->id,
+            'name' => $batch->name,
+            'total_jobs' => $batch->totalJobs,
+            'pending_jobs' => $batch->pendingJobs,
+            'failed_jobs' => $batch->failedJobs,
+            'progress' => $batch->progress(),
+            'finished' => $batch->finished(),
+            'cancelled' => $batch->cancelled(),
+        ]);
+    }
+}
+```
+
+Replace `routes/web.php` with:
+
+```php
+<?php
+
+use App\Http\Controllers\BatchStatusController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/', function () {
+    return view('welcome');
+});
+
+Route::get('/batches/{id}', BatchStatusController::class);
+```
+
+How the batch works:
+
+- `Bus::batch($jobs)->dispatch()` writes one row to `job_batches` and one row per job to `jobs`, then returns a `Batch` object. Its `id` is a UUID you use to look the batch up later.
+- `array_chunk($rows, $size)` splits the array into groups of `$size` rows. The chunk number (`$index + 1`) is passed to the job so the demo switch can target one chunk.
+- `allowFailures()` keeps the batch running when a job fails. Without it, the first failure cancels all remaining jobs.
+- The three callbacks run in the worker, after the jobs, not in your command. `then` runs only if every job succeeded, `catch` runs once for the first failure, and `finally` runs when every job has run, whether or not some failed.
+- Callback closures are serialized into the database, so do not use `$this` or large outside variables in them. Everything they need comes in through the `Batch` argument.
+- `Bus::findBatch($id)` reloads the batch, and `progress()` returns a percentage from 0 to 100. The controller is a single-action (invokable) class, so the route names the class with no method.
+- `abort_if($batch === null, 404, ...)` turns an unknown batch id into a 404 response instead of an error.
+
+## Step 6: Run the batch, break it on purpose, then fix it
+
+Keep the server (terminal 1) and the worker (terminal 2) running. If the worker was started before you wrote the Step 4 job, restart it so it loads the new class.
+
+### 6a. A normal run
+
+```bash
+php artisan import:start 1000 --chunk=50
+```
+
+That is 20 jobs of about half a second each, so one worker needs roughly ten seconds. Copy the batch id the command prints, then poll the endpoint once a second in terminal 3, replacing `BATCH_ID`:
+
+```bash
+while true; do curl -s -H 'Accept: application/json' http://127.0.0.1:8000/batches/BATCH_ID; echo; sleep 1; done
+```
+
+You should see `pending_jobs` fall and `progress` climb toward 100, for example `"total_jobs":20,"pending_jobs":12,"progress":40`. At the end `progress` is 100 and `finished` is `true`. In tinker, `App\Models\Contact::count()` should now be about 1010 (10 seeded plus 1000 imported).
+
+Two things to try next:
+
+- Run the same `import:start 1000 --chunk=50` again. The count stays at about 1010, because `upsert` updated the existing rows instead of adding new ones.
+- Start a second worker in a new terminal with the same `queue:work` command, then run the import again. The two workers share the 20 jobs, so it should finish in about half the time. This is how queues scale: more workers, no code change.
+
+### 6b. Make one chunk fail
+
+```bash
+php artisan import:start 1000 --chunk=100 --fail-chunk=3
+```
+
+That makes 10 jobs; job 3 throws. Watch the worker output and the poll loop:
+
+- Job 3 shows `FAIL`, is retried once (`$tries = 2`), and shows `FAIL` again. The other nine succeed.
+- The endpoint settles at `progress` 90 with `pending_jobs` 1 and `failed_jobs` 1, and `finished` should stay `false`. A failed job still counts as unfinished work until it is retried.
+- In `storage/logs/laravel.log` you should find the `first failure` line from `catch` and the `finished with 1 failed job(s)` line from `finally`, but no `every job succeeded` line from `then`.
+- `php artisan queue:failed` lists the failed job with its id, queue and the exception message.
+
+### 6c. Fix the cause and retry only the failed job
+
+In `php artisan tinker`, remove the demo switch (this stands in for fixing a real bug):
+
+```php
+Cache::forget('lab.fail_chunk');
+```
+
+Then retry the batch, replacing `BATCH_ID`:
+
+```bash
+php artisan queue:retry-batch BATCH_ID
+```
+
+The worker runs chunk 3 again and it succeeds. The poll now shows `progress` 100 and `failed_jobs` 0. Only the one failed job ran again; the nine good chunks were not touched. Related commands are `php artisan queue:retry all` (every failed job), `php artisan queue:forget ID` (drop one) and `php artisan queue:flush` (clear the failed list).
+
+### 6d. Cancel a running batch
+
+Start a long import and, while it runs, cancel it from tinker:
+
+```bash
+php artisan import:start 5000 --chunk=50
+```
+
+```php
+Bus::findBatch('BATCH_ID')->cancel();
+```
+
+The poll shows `cancelled` as `true`. A job that is already running finishes, but every job still waiting reaches the `cancelled()` check from Step 4 and returns without importing, so the table ends up with fewer than 5000 new rows. Remove that check from the job and cancel again to see the difference.
+
+## Experiments and exercises
+
+Change one thing at a time and predict what you will see before you run it; the prediction is where the learning happens.
+
+### Experiments (no new code)
+
+- Stop the worker with Ctrl+C in the middle of a batch, wait, then start it again. Jobs not yet run are still in the `jobs` table, so the batch carries on. A job that was running when you stopped it comes back after the `retry_after` timeout, 90 seconds by default in `config/queue.php`.
+- Start the worker with `--queue=default` only. The `emails` jobs from Step 3 never run, because nobody listens to that queue. Add `emails` back and they run.
+- Run `php artisan queue:work --once` to process exactly one job, or `--stop-when-empty` to exit when the queue is empty.
+- Set `$tries = 1` in `SendWelcomeMessage`, restart the worker, and queue more welcome messages. More of them end up in `failed_jobs`, because the flaky mail server now gets no second chance.
+- Run `import:start 100 --chunk=1`. You get 100 tiny jobs; compare the total time with `--chunk=100` to see why chunk size is a trade-off.
+
+### Exercises (small additions to the project)
+
+1. Make `SendWelcomeMessage` implement `ShouldBeUnique` and add a `uniqueId()` method that returns the contact id, so dispatching it twice for one contact keeps only one job waiting.
+2. In the batch's `then` callback, queue a `SendWelcomeMessage` for every contact whose `welcomed_at` is `null`. This joins the two halves of the lab: import first, welcome after.
+3. Add a `->progress(function (Batch $batch) { ... })` callback to `Bus::batch` that logs the percentage each time a job finishes.
+4. Replace `$tries` in `SendWelcomeMessage` with a `retryUntil()` method that returns `now()->addMinutes(2)`, and read the difference between retrying a number of times and retrying for a time.
+5. Add a `middleware()` method to `SendWelcomeMessage` that returns `[new WithoutOverlapping($this->contactId)]`, so two workers never process the same contact at the same moment.
+6. Write a feature test that calls `Bus::fake()`, runs `$this->artisan('import:start', ['count' => 250, '--chunk' => 100])`, and asserts with `Bus::assertBatched(...)` that a batch of 3 jobs was created.
+7. Replace the generated rows with a real CSV: store an uploaded file, then pass each job the file path and a line range instead of the rows themselves.
+
+## Cheat sheet and common problems
+
+The ideas in this lab fit in one table; come back to it when a term feels fuzzy.
+
+| Concept           | Where you met it                             | In one line                                                                    |
+| ----------------- | -------------------------------------------- | ------------------------------------------------------------------------------ |
+| Job               | `SendWelcomeMessage`                         | A class with `implements ShouldQueue` whose `handle()` runs later, in a worker |
+| Worker            | `php artisan queue:work`                     | The process that runs jobs; it keeps your code in memory until restarted       |
+| Named queue       | `onQueue('emails')`                          | A separate waiting line; a worker lists the queues it reads, in priority order |
+| Tries and backoff | `$tries`, `backoff()`                        | How many times a job may run, and how long to wait between tries               |
+| Delay             | `->delay(...)`                               | Do not run the job before this time                                            |
+| Failed job        | `failed_jobs`, `queue:failed`, `queue:retry` | A job that used up its tries; kept so you can inspect and retry it             |
+| Idempotent        | `welcomed_at`, `upsert`                      | Running the job twice gives the same result as running it once                 |
+| Batch             | `Bus::batch(...)`                            | A group of jobs with shared progress, callbacks, cancel and retry              |
+| Batchable         | `use Batchable`                              | Adds `$this->batch()` to a job so it can check for cancellation                |
+| `allowFailures()` | `import:start`                               | The batch continues after a job fails, instead of cancelling                   |
+| Callbacks         | `then`, `catch`, `finally`                   | All succeeded, first failure, and all done (success or not)                    |
+| Cancel            | `cancelled()`                                | Cooperative: waiting jobs still start, so they must check and return           |
+
+When something goes wrong, match the symptom:
+
+| Symptom                                                   | Likely cause                                            | Fix                                                                                                            |
+| --------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Jobs sit in the `jobs` table and nothing runs             | No worker, or the worker does not read the job's queue  | Run `php artisan queue:work --queue=default,emails`                                                            |
+| You changed a job but the old behavior remains            | The worker still holds the old code in memory           | Stop it with Ctrl+C and start it again, or run `php artisan queue:restart`                                     |
+| `Class "Illuminate\Foundation\Queue\Queueable" not found` | Laravel older than 11                                   | Use `Illuminate\Bus\Queueable` instead                                                                         |
+| `Call to undefined method ... attempts()`                 | The job lacks `InteractsWithQueue`                      | Add the trait to the class                                                                                     |
+| `no such table: job_batches`                              | The queue migration has not run                         | Run `php artisan migrate`; if the migration is missing, run `php artisan make:queue-batches-table` and migrate |
+| The batch URL shows an HTML error page                    | Wrong batch id, or no `Accept: application/json` header | Copy the full UUID the command printed and keep the header in the `curl` call                                  |
+| Progress stays below 100                                  | A job in the batch failed                               | Run `php artisan queue:failed`, fix the cause, then `php artisan queue:retry-batch BATCH_ID`                   |
+| `--fail-chunk=15` fails nothing                           | The number is higher than the number of chunks          | Choose a number between 1 and the chunk count                                                                  |
+| `could not find driver`                                   | PHP lacks the database extension                        | Install `pdo_sqlite`, or `pdo_pgsql` for Postgres                                                              |
+
+---
+
 ## 1. The big picture: one request, end to end
 
 ```
