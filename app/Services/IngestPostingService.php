@@ -1,10 +1,9 @@
 <?php
 
-namespace App\Service;
+namespace App\Services;
 
 use App\Enums\IngestOutcomeEnum;
 use App\Jobs\SyncPostingJob;
-use App\Services\ProviderRegistry;
 
 class IngestPostingService
 {

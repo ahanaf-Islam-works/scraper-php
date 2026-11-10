@@ -1,8 +1,22 @@
 <?php
 
-use Illuminate\Foundation\Inspiring;
-use Illuminate\Support\Facades\Artisan;
+use App\Enums\ScrapingSpiderEnum;
+use Illuminate\Support\Facades\Schedule;
 
-Artisan::command('inspire', function () {
-    $this->comment(Inspiring::quote());
-})->purpose('Display an inspiring quote');
+Schedule::command('scraping:dispatch-companies --spider=' . ScrapingSpiderEnum::AirregiJobs->value)
+    ->onOneServer()
+    ->withoutOverlapping()
+    ->dailyAt('06:30')
+    ->timezone('Asia/Tokyo');
+
+Schedule::command('scraping:dispatch-companies --spider=' . ScrapingSpiderEnum::IndeedJobDetails->value)
+    ->onOneServer()
+    ->withoutOverlapping()
+    ->dailyAt('07:15')
+    ->timezone('Asia/Tokyo');
+
+Schedule::command('scraping:dispatch-companies --spider=' . ScrapingSpiderEnum::IndeedJobApplications->value)
+    ->onOneServer()
+    ->withoutOverlapping()
+    ->dailyAt('07:30')
+    ->timezone('Asia/Tokyo');

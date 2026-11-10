@@ -16,7 +16,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias(['protected' => EnsureAdminApiKey::class]);
-        $middleware->api(append: [AssignRequestId::class, EnsureAdminApiKey::class]);
+        $middleware->api(append: [AssignRequestId::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\JobIngestController;
 use App\Http\Controllers\Api\ScrapingController;
 use Illuminate\Support\Facades\Route;
 
